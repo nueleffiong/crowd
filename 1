@@ -1,0 +1,150 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/utils/math/SafeMath.sol";
+
+contract Crowdfunding {
+    using SafeMath for uint256;
+
+    // Enums for crowdfunding stages
+    enum FundingStage { Open, Successful, Failed }
+
+    // Struct to hold information about each milestone
+    struct Milestone {
+        uint256 amount;         // Amount required to reach this milestone
+        uint256 deadline;       // Deadline to reach this milestone
+        bool reached;           // True if milestone is reached
+        bool paid;              // True if funds for this milestone are released
+    }
+
+    // Variables
+    address public projectOwner;
+    uint256 public goalAmount;
+    uint256 public deadline;
+    IERC20 public token;  // ERC-20 token contract
+    FundingStage public stage;
+    Milestone[] public milestones;
+    mapping(address => uint256) public contributions;
+    mapping(address => bool) public hasClaimedTokens;
+
+    event Contribution(address indexed contributor, uint256 amount);
+    event MilestoneReached(uint256 milestoneIndex);
+    event ProjectFunded();
+    event TokensClaimed(address indexed contributor, uint256 tokenAmount);
+
+    modifier onlyProjectOwner() {
+        require(msg.sender == projectOwner, "You are not the project owner");
+        _;
+    }
+
+    constructor(
+        address _projectOwner,
+        uint256 _goalAmount,
+        uint256 _deadline,
+        address _tokenAddress
+    ) {
+        require(_projectOwner != address(0), "Invalid project owner address");
+        require(_goalAmount > 0, "Goal amount must be greater than zero");
+        require(_deadline > block.timestamp, "Invalid deadline");
+
+        projectOwner = _projectOwner;
+        goalAmount = _goalAmount;
+        deadline = _deadline;
+        token = IERC20(_tokenAddress);
+        stage = FundingStage.Open;
+    }
+
+    function contribute(uint256 amount) external {
+        require(stage == FundingStage.Open, "Crowdfunding is not open");
+        require(amount > 0, "Amount must be greater than zero");
+        require(block.timestamp < deadline, "Crowdfunding deadline has passed");
+
+        // Transfer tokens from the contributor to this contract
+        token.transferFrom(msg.sender, address(this), amount);
+
+        contributions[msg.sender] = contributions[msg.sender].add(amount);
+
+        emit Contribution(msg.sender, amount);
+
+        checkMilestoneReached();
+    }
+
+    function checkMilestoneReached() internal {
+        uint256 totalRaised = address(this).balance;
+        for (uint256 i = 0; i < milestones.length; i++) {
+            if (!milestones[i].reached && totalRaised >= milestones[i].amount) {
+                milestones[i].reached = true;
+                emit MilestoneReached(i);
+            }
+        }
+    }
+
+    function closeCrowdfunding() external onlyProjectOwner {
+        require(stage == FundingStage.Open, "Crowdfunding is not open");
+
+        uint256 totalRaised = address(this).balance;
+        if (totalRaised >= goalAmount) {
+            stage = FundingStage.Successful;
+            emit ProjectFunded();
+        } else {
+            stage = FundingStage.Failed;
+        }
+    }
+
+    function claimTokens() external {
+        require(stage == FundingStage.Successful, "Crowdfunding is not successful");
+        require(contributions[msg.sender] > 0, "You have not contributed");
+        require(!hasClaimedTokens[msg.sender], "Tokens already claimed");
+
+        uint256 tokenAmount = calculateTokenReward(msg.sender);
+        hasClaimedTokens[msg.sender] = true;
+
+        // Transfer tokens to the contributor
+        token.transfer(msg.sender, tokenAmount);
+
+        emit TokensClaimed(msg.sender, tokenAmount);
+    }
+
+    function calculateTokenReward(address contributor) internal view returns (uint256) {
+        uint256 totalRaised = address(this).balance;
+        uint256 totalTokens = token.balanceOf(address(this));
+        uint256 contributorContribution = contributions[contributor];
+        return totalTokens.mul(contributorContribution).div(totalRaised);
+    }
+
+    function withdrawContribution() external {
+        require(stage == FundingStage.Failed, "Crowdfunding is not failed");
+        require(contributions[msg.sender] > 0, "You have not contributed");
+
+        uint256 contributionAmount = contributions[msg.sender];
+        contributions[msg.sender] = 0;
+
+        // Transfer contributed ETH back to the contributor
+        payable(msg.sender).transfer(contributionAmount);
+    }
+
+    function addMilestone(uint256 amount, uint256 deadline) external onlyProjectOwner {
+        require(amount > 0, "Amount must be greater than zero");
+        require(deadline > block.timestamp, "Invalid deadline");
+
+        milestones.push(Milestone(amount, deadline, false, false));
+    }
+
+    // Function to retrieve the contract's balance
+    function getContractBalance() external view returns (uint256) {
+        return address(this).balance;
+    }
+
+    // Function to retrieve the total number of milestones
+    function getNumberOfMilestones() external view returns (uint256) {
+        return milestones.length;
+    }
+
+    // Function to retrieve information about a specific milestone
+    function getMilestone(uint256 index) external view returns (uint256 amount, uint256 deadline, bool reached, bool paid) {
+        require(index < milestones.length, "Invalid milestone index");
+        Milestone memory milestone = milestones[index];
+        return (milestone.amount, milestone.deadline, milestone.reached, milestone.paid);
+    }
+}
